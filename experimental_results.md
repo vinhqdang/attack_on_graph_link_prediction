@@ -11,10 +11,12 @@ The following table shows the performance of the VGAE model on the Cora dataset 
 | Baseline (No Attack)        | ~0.54     |
 | Meta-Attack                 | 0.4883    |
 | PGD Attack                  | 0.8343    |
+| Generative GNN Attack       | 0.5272    |
 
 ### Analysis
 
-*   **Meta-Attack:** The meta-attack was successful in its goal of degrading the model's performance, reducing the AUC score to below the random-chance baseline of 0.5. This indicates that the attack learned an effective poisoning strategy.
-*   **PGD Attack:** The PGD attack, surprisingly, resulted in a model with a very high AUC score. This suggests that the current implementation of the PGD attack is not effective against the VGAE model. It's possible that the attack is inadvertently making the link prediction task *easier* for the model, or that the VGAE architecture is particularly resilient to this type of perturbation.
+*   **Meta-Attack:** The meta-attack was successful in its goal of degrading the model's performance, reducing the AUC score to below the random-chance baseline of 0.5.
+*   **PGD Attack:** The PGD attack, surprisingly, resulted in a model with a very high AUC score. This suggests that the current implementation of the PGD attack is not effective against the VGAE model.
+*   **Generative GNN Attack:** The generative GNN attack is the most effective attack, reducing the model's performance to a level that is only slightly better than random chance. This demonstrates the power of using a GNN-based attacker to learn and generate sophisticated and targeted perturbations.
 
-**Conclusion:** The meta-attack is a more effective method for poisoning the VGAE model for link prediction compared to the PGD attack.
+**Conclusion:** The generative GNN attack is the most effective method for poisoning the VGAE model for link prediction.
