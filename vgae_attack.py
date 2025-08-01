@@ -2,18 +2,8 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.datasets import Planetoid
 from torch_geometric.nn import GCNConv
-from torch_geometric.utils import train_test_split_edges, negative_sampling
+from torch_geometric.utils import train_test_split_edges, to_dense_adj
 from sklearn.metrics import roc_auc_score, average_precision_score
-
-class GCNEncoder(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(GCNEncoder, self).__init__()
-        self.conv1 = GCNConv(in_channels, 2 * out_channels, cached=True)
-        self.conv2 = GCNConv(2 * out_channels, out_channels, cached=True)
-
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index).relu()
-        return self.conv2(x, edge_index)
 
 class VariationalGCNEncoder(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -30,11 +20,6 @@ class VGAE(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(VGAE, self).__init__()
         self.encoder = VariationalGCNEncoder(in_channels, out_channels)
-        self.decoder = lambda z, edge_index, sigmoid=True: (
-            (z[edge_index[0]] * z[edge_index[1]]).sum(dim=1).sigmoid()
-            if sigmoid
-            else (z[edge_index[0]] * z[edge_index[1]]).sum(dim=1)
-        )
 
     def reparametrize(self, mu, logstd):
         if self.training:
@@ -46,8 +31,12 @@ class VGAE(torch.nn.Module):
         z = self.reparametrize(self.mu, self.logstd)
         return z
 
-    def decode(self, z, edge_index):
-        return self.decoder(z, edge_index)
+    def decode(self, z):
+        return torch.sigmoid(torch.matmul(z, z.t()))
+
+    def recon_loss(self, z, adj_target):
+        reconstructed_adj = self.decode(z)
+        return F.binary_cross_entropy(reconstructed_adj, adj_target)
 
     def kl_loss(self, mu=None, logstd=None):
         mu = self.mu if mu is None else mu
@@ -56,31 +45,16 @@ class VGAE(torch.nn.Module):
             torch.sum(1 + 2 * logstd - mu**2 - logstd.exp()**2, dim=1)
         )
 
-    def recon_loss(self, z, pos_edge_index, neg_edge_index=None):
-        pos_loss = -torch.log(
-            self.decoder(z, pos_edge_index, sigmoid=True) + 1e-15
-        ).mean()
-
-        if neg_edge_index is None:
-            neg_edge_index = negative_sampling(pos_edge_index, z.size(0))
-        neg_loss = -torch.log(
-            1 - self.decoder(z, neg_edge_index, sigmoid=True) + 1e-15
-        ).mean()
-
-        return pos_loss + neg_loss
-
     def test(self, z, pos_edge_index, neg_edge_index):
-        pos_y = z.new_ones(pos_edge_index.size(1))
-        neg_y = z.new_zeros(neg_edge_index.size(1))
-        y = torch.cat([pos_y, neg_y], dim=0)
-
-        pos_pred = self.decoder(z, pos_edge_index, sigmoid=True)
-        neg_pred = self.decoder(z, neg_edge_index, sigmoid=True)
-        pred = torch.cat([pos_pred, neg_pred], dim=0)
-
-        y, pred = y.detach().cpu().numpy(), pred.detach().cpu().numpy()
-
-        return roc_auc_score(y, pred), average_precision_score(y, pred)
+        reconstructed_adj = self.decode(z)
+        pos_preds = reconstructed_adj[pos_edge_index[0], pos_edge_index[1]]
+        neg_preds = reconstructed_adj[neg_edge_index[0], neg_edge_index[1]]
+        
+        preds = torch.cat([pos_preds, neg_preds], dim=0)
+        labels = torch.cat([torch.ones_like(pos_preds), torch.zeros_like(neg_preds)], dim=0)
+        
+        preds, labels = preds.detach().cpu().numpy(), labels.detach().cpu().numpy()
+        return roc_auc_score(labels, preds), average_precision_score(labels, preds)
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -90,12 +64,14 @@ def main():
 
     model = VGAE(dataset.num_features, 16).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    
+    adj = to_dense_adj(data.train_pos_edge_index, max_num_nodes=data.num_nodes)[0]
 
     def train():
         model.train()
         optimizer.zero_grad()
         z = model.encode(data.x, data.train_pos_edge_index)
-        loss = model.recon_loss(z, data.train_pos_edge_index) + (1 / data.num_nodes) * model.kl_loss()
+        loss = model.recon_loss(z, adj) + (1 / data.num_nodes) * model.kl_loss()
         loss.backward()
         optimizer.step()
         return float(loss)
